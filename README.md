@@ -11,7 +11,7 @@
 |---|---|---|---|
 | Luis Ernesto Bocanegra Valcero | 1121822429 | Líder del repositorio y desarrollo del problema 1 | [@netico86](https://github.com/netico86) |
 | Yeiber Bryan Cruz Cruz | 1121875462 | Validación estricta, encapsulación y excepciones de seguridad | [@Imbryacruz](https://github.com/Imbryacruz) |
-| [Nombre del integrante 3] | [Código] | Desarrollo del problema 3 | [@usuario3](https://github.com/usuario3) |
+| Yeiber Bryan Cruz Cruz | 1121875462 | Validación estricta, encapsulación, excepciones de seguridad, módulo de auditoría/logs y gestión de reservas. | [[@Imbryacruz](https://github.com/Imbryacruz) |
 | [Nombre del integrante 4] | [Código] | Desarrollo del problema 4 | [@usuario4](https://github.com/usuario4) |
 | [Nombre del integrante 5] | [Código] | Desarrollo del problema 5 | [@usuario5](https://github.com/usuario5) |
 
