@@ -7,14 +7,25 @@ Descripción:
       validaciones mediante propiedades (@property / setters).
     - Implementa tres clases derivadas: `ReservaSala`, `AlquilerEquipo` y
       `AsesoriaEspecializada`, demostrando herencia, polimorfismo y sobrecarga
-      de métodos (`@singledispatchmethod`) para ajustes y cálculos.
+      de métodos.
+    - Sobrecarga de métodos:
+        * `calcular_costo(unidades, descuento=0.0, impuesto=0.0)`: variantes
+          del cálculo con parámetros opcionales (descuento e impuesto).
+        * `aplicar_ajuste_extra(...)`: despacha según el tipo del argumento
+          (int, float o str) mediante `@singledispatchmethod`.
 ===============================================================================
 """
 
+import math
+import unicodedata
 from abc import ABC, abstractmethod
 from functools import singledispatchmethod
-import unicodedata
-from src.excepciones import DatoInvalidoError, DatoFaltanteError
+
+from src.excepciones import (
+    CalculoInconsistenteError,
+    DatoFaltanteError,
+    DatoInvalidoError,
+)
 
 
 def _normalizar_texto(texto: str) -> str:
@@ -29,15 +40,18 @@ def _normalizar_texto(texto: str) -> str:
 class Servicio(ABC):
     """Clase abstracta base para los servicios ofrecidos por Software FJ."""
 
-    _contador_codigo = 0
+    _contador_codigo = 0  # Contador de clase para generar códigos únicos
 
     def __init__(self, nombre: str, tarifa_base: float, disponible: bool = True):
+        # Los setters aplican las validaciones antes de asignar los valores
         self.nombre = nombre
         self.tarifa_base = tarifa_base
         self.disponible = disponible
 
         Servicio._contador_codigo += 1
         self._codigo = f"SRV-{Servicio._contador_codigo:03d}"
+
+    # =========================== PROPIEDADES ===========================
 
     @property
     def codigo(self) -> str:
@@ -64,7 +78,14 @@ class Servicio(ABC):
     def tarifa_base(self, valor: float) -> None:
         if valor is None:
             raise DatoFaltanteError("tarifa_base")
-        if isinstance(valor, bool) or not isinstance(valor, (int, float)) or valor <= 0:
+        # bool es subclase de int, por eso se excluye de forma explícita;
+        # isfinite descarta NaN e infinito.
+        if (
+            isinstance(valor, bool)
+            or not isinstance(valor, (int, float))
+            or not math.isfinite(valor)
+            or valor <= 0
+        ):
             raise DatoInvalidoError("tarifa_base", valor)
         self._tarifa_base = float(valor)
 
@@ -78,27 +99,79 @@ class Servicio(ABC):
             raise DatoInvalidoError("disponible", valor)
         self._disponible = valor
 
+    # =========================== MÉTODOS ABSTRACTOS ===========================
+
     @abstractmethod
-    def calcular_costo(self, unidades: int, descuento: float = 0.0) -> float:
-        """Calcula el costo total del servicio según unidades y descuento (0.0 a 1.0)."""
-        pass
+    def calcular_costo(
+        self, unidades: int, descuento: float = 0.0, impuesto: float = 0.0
+    ) -> float:
+        """Calcula el costo total según unidades, descuento (0.0 a <1.0)
+        e impuesto (0.0 a <1.0, por ejemplo 0.19 para IVA)."""
 
     @abstractmethod
     def describir(self) -> str:
         """Retorna una descripción legible y específica del servicio."""
-        pass
 
     @abstractmethod
     def obtener_detalle(self) -> dict:
         """Retorna un diccionario con la información estructurada del servicio."""
-        pass
 
-    def _validar_unidades_y_descuento(self, unidades: int, descuento: float) -> float:
+    @abstractmethod
+    def _nota_ajuste(self, texto: str) -> str:
+        """Construye el mensaje de un ajuste de texto (nota, accesorio, etc.)."""
+
+    # =========================== MÉTODOS COMUNES ===========================
+
+    def _validar_parametros_costo(self, unidades, descuento, impuesto):
+        """Valida los parámetros del cálculo de costos y retorna (descuento, impuesto)."""
         if isinstance(unidades, bool) or not isinstance(unidades, int) or unidades <= 0:
             raise DatoInvalidoError("unidades", unidades)
-        if isinstance(descuento, bool) or not isinstance(descuento, (int, float)) or not (0.0 <= descuento < 1.0):
-            raise DatoInvalidoError("descuento", descuento)
-        return float(descuento)
+        for campo, valor in (("descuento", descuento), ("impuesto", impuesto)):
+            if (
+                isinstance(valor, bool)
+                or not isinstance(valor, (int, float))
+                or not (0.0 <= valor < 1.0)
+            ):
+                raise DatoInvalidoError(campo, valor)
+        return float(descuento), float(impuesto)
+
+    def _total(self, subtotal: float, descuento: float, impuesto: float) -> float:
+        """Aplica descuento e impuesto y verifica que el resultado sea coherente."""
+        total = round(subtotal * (1 - descuento) * (1 + impuesto), 2)
+        if not math.isfinite(total) or total <= 0:
+            raise CalculoInconsistenteError(
+                f"el costo calculado ({total}) no es un valor positivo válido"
+            )
+        return total
+
+    @singledispatchmethod
+    def aplicar_ajuste_extra(self, ajuste):
+        """Sobrecarga de método según el tipo del argumento:
+        - int:   porcentaje entero de recargo (10 equivale a 10 %).
+        - float: fracción de recargo (0.15 equivale a 15 %).
+        - str:   nota/accesorio/certificación propia de cada servicio.
+        Cualquier otro tipo se rechaza con DatoInvalidoError.
+        """
+        raise DatoInvalidoError("ajuste", ajuste)
+
+    @aplicar_ajuste_extra.register
+    def _(self, ajuste: int) -> float:
+        if isinstance(ajuste, bool) or ajuste < 0:
+            raise DatoInvalidoError("ajuste", ajuste)
+        return round(self.tarifa_base * (1 + ajuste / 100), 2)
+
+    @aplicar_ajuste_extra.register
+    def _(self, ajuste: float) -> float:
+        if not math.isfinite(ajuste) or ajuste < 0:
+            raise DatoInvalidoError("ajuste", ajuste)
+        return round(self.tarifa_base * (1 + ajuste), 2)
+
+    @aplicar_ajuste_extra.register
+    def _(self, ajuste: str) -> str:
+        texto = ajuste.strip()
+        if not texto:
+            raise DatoFaltanteError("ajuste")
+        return self._nota_ajuste(texto)
 
     def __str__(self) -> str:
         estado = "Disponible" if self._disponible else "No disponible"
@@ -140,35 +213,15 @@ class ReservaSala(Servicio):
             raise DatoInvalidoError("requiere_proyector", valor)
         self._requiere_proyector = valor
 
-    def calcular_costo(self, unidades: int, descuento: float = 0.0) -> float:
-        """Calcula el costo por cantidad de horas; añade 15% si requiere proyector."""
-        desc = self._validar_unidades_y_descuento(unidades, descuento)
+    def calcular_costo(
+        self, unidades: int, descuento: float = 0.0, impuesto: float = 0.0
+    ) -> float:
+        """Costo por horas; añade 15 % si requiere proyector."""
+        desc, imp = self._validar_parametros_costo(unidades, descuento, impuesto)
         recargo_proyector = 1.15 if self._requiere_proyector else 1.0
-        subtotal = self.tarifa_base * unidades * recargo_proyector
-        return round(subtotal * (1 - desc), 2)
+        return self._total(self.tarifa_base * unidades * recargo_proyector, desc, imp)
 
-    @singledispatchmethod
-    def aplicar_ajuste_extra(self, ajuste):
-        """Sobrecarga de método: aplica recargo porcentual (int/float) o registra nota (str)."""
-        raise DatoInvalidoError("ajuste", ajuste)
-
-    @aplicar_ajuste_extra.register
-    def _(self, ajuste: int) -> float:
-        if isinstance(ajuste, bool) or ajuste < 0:
-            raise DatoInvalidoError("ajuste", ajuste)
-        return round(self.tarifa_base * (1 + float(ajuste)), 2)
-
-    @aplicar_ajuste_extra.register
-    def _(self, ajuste: float) -> float:
-        if ajuste < 0:
-            raise DatoInvalidoError("ajuste", ajuste)
-        return round(self.tarifa_base * (1 + ajuste), 2)
-
-    @aplicar_ajuste_extra.register
-    def _(self, ajuste: str) -> str:
-        texto = ajuste.strip()
-        if not texto:
-            raise DatoFaltanteError("ajuste")
+    def _nota_ajuste(self, texto: str) -> str:
         return f"[{self.codigo}] {self.nombre} - Nota de sala: {texto}"
 
     def describir(self) -> str:
@@ -225,36 +278,19 @@ class AlquilerEquipo(Servicio):
             raise DatoInvalidoError("seguro_incluido", valor)
         self._seguro_incluido = valor
 
-    def calcular_costo(self, unidades: int, descuento: float = 0.0) -> float:
-        """Calcula el costo por días de alquiler; suma un 10% si incluye seguro."""
-        desc = self._validar_unidades_y_descuento(unidades, descuento)
+    def calcular_costo(
+        self, unidades: int, descuento: float = 0.0, impuesto: float = 0.0
+    ) -> float:
+        """Costo por días de alquiler; suma 10 % si incluye seguro."""
+        desc, imp = self._validar_parametros_costo(unidades, descuento, impuesto)
         factor_seguro = 1.10 if self._seguro_incluido else 1.0
-        subtotal = self.tarifa_base * unidades * factor_seguro
-        return round(subtotal * (1 - desc), 2)
+        return self._total(self.tarifa_base * unidades * factor_seguro, desc, imp)
 
-    @singledispatchmethod
-    def aplicar_ajuste_extra(self, ajuste):
-        """Sobrecarga de método: aplica recargo porcentual (int/float) o asigna accesorio (str)."""
-        raise DatoInvalidoError("ajuste", ajuste)
-
-    @aplicar_ajuste_extra.register
-    def _(self, ajuste: int) -> float:
-        if isinstance(ajuste, bool) or ajuste < 0:
-            raise DatoInvalidoError("ajuste", ajuste)
-        return round(self.tarifa_base * (1 + float(ajuste)), 2)
-
-    @aplicar_ajuste_extra.register
-    def _(self, ajuste: float) -> float:
-        if ajuste < 0:
-            raise DatoInvalidoError("ajuste", ajuste)
-        return round(self.tarifa_base * (1 + ajuste), 2)
-
-    @aplicar_ajuste_extra.register
-    def _(self, ajuste: str) -> str:
-        accesorio = ajuste.strip()
-        if not accesorio:
-            raise DatoFaltanteError("accesorio")
-        return f"[{self.codigo}] {self.nombre} ({self._categoria_equipo}) - Accesorio incluido: {accesorio}"
+    def _nota_ajuste(self, texto: str) -> str:
+        return (
+            f"[{self.codigo}] {self.nombre} ({self._categoria_equipo}) "
+            f"- Accesorio incluido: {texto}"
+        )
 
     def describir(self) -> str:
         seguro = "con seguro" if self._seguro_incluido else "sin seguro"
@@ -319,36 +355,21 @@ class AsesoriaEspecializada(Servicio):
             raise DatoInvalidoError("modalidad", valor)
         self._modalidad = normalizada
 
-    def calcular_costo(self, unidades: int, descuento: float = 0.0) -> float:
-        """Calcula el costo por número de sesiones; aplica 1.20x si es presencial."""
-        desc = self._validar_unidades_y_descuento(unidades, descuento)
+    def calcular_costo(
+        self, unidades: int, descuento: float = 0.0, impuesto: float = 0.0
+    ) -> float:
+        """Costo por sesiones; aplica 1.20x si es presencial."""
+        desc, imp = self._validar_parametros_costo(unidades, descuento, impuesto)
         multiplicador_modalidad = 1.20 if self._modalidad == "presencial" else 1.0
-        subtotal = self.tarifa_base * unidades * multiplicador_modalidad
-        return round(subtotal * (1 - desc), 2)
+        return self._total(
+            self.tarifa_base * unidades * multiplicador_modalidad, desc, imp
+        )
 
-    @singledispatchmethod
-    def aplicar_ajuste_extra(self, ajuste):
-        """Sobrecarga de método: aplica recargo porcentual (int/float) o nivel de certificación (str)."""
-        raise DatoInvalidoError("ajuste", ajuste)
-
-    @aplicar_ajuste_extra.register
-    def _(self, ajuste: int) -> float:
-        if isinstance(ajuste, bool) or ajuste < 0:
-            raise DatoInvalidoError("ajuste", ajuste)
-        return round(self.tarifa_base * (1 + float(ajuste)), 2)
-
-    @aplicar_ajuste_extra.register
-    def _(self, ajuste: float) -> float:
-        if ajuste < 0:
-            raise DatoInvalidoError("ajuste", ajuste)
-        return round(self.tarifa_base * (1 + ajuste), 2)
-
-    @aplicar_ajuste_extra.register
-    def _(self, ajuste: str) -> str:
-        certificacion = ajuste.strip()
-        if not certificacion:
-            raise DatoFaltanteError("certificacion")
-        return f"[{self.codigo}] {self.nombre} ({self._especialidad}) - Certificación del asesor: {certificacion}"
+    def _nota_ajuste(self, texto: str) -> str:
+        return (
+            f"[{self.codigo}] {self.nombre} ({self._especialidad}) "
+            f"- Certificación del asesor: {texto}"
+        )
 
     def describir(self) -> str:
         return (
